@@ -196,6 +196,9 @@ function printUsage() {
     console.log(`  ${paintGreen('--dry-run')}                   List what would be downloaded (with a CSV) without downloading anything`);
     console.log(`  ${paintGreen('--retry-failed')}              Only retry units marked "failed" in the last report.csv for this course`);
     console.log(`  ${paintGreen('--verify-integrity')}          After downloading, verify file sizes against the server and offer to re-download mismatches`);
+    console.log(`  ${paintGreen('--output')} ${paintYellow('<path>')}              Custom output directory (default: ./download/<courseName>)`);
+    console.log(`  ${paintGreen('--no-wake-lock')}              (Termux/Android) Skip acquiring a wake-lock during download`);
+    console.log(`  ${paintGreen('--no-notify')}                 (Termux/Android) Skip the end-of-run notification`);
     console.log(`  ${paintGreen('--verbose')} | ${paintGreen('-v')}              Verbose debug / HTTP flow info`);
     console.log(`  ${paintGreen('--help')} | ${paintGreen('-h')}                 Show this help and exit`);
     console.log('\n' + paintBold('Env vars:'));
@@ -213,6 +216,7 @@ function printUsage() {
     console.log('  ' + paintCyan('node download.mjs "https://maktabkhooneh.org/course/<slug>/" --dry-run'));
     console.log('  ' + paintCyan('node download.mjs "https://maktabkhooneh.org/course/<slug>/" --retry-failed'));
     console.log('  ' + paintCyan('node download.mjs "https://maktabkhooneh.org/course/<slug>/" --verify-integrity'));
+    console.log('  ' + paintCyan('node download.mjs "https://maktabkhooneh.org/course/<slug>/" --output ~/storage/downloads/Maktabkhooneh'));
     console.log('');
 }
 
@@ -235,6 +239,9 @@ function parseCLI() {
     let dryRun = false;
     let retryFailed = false;
     let verifyIntegrity = false;
+    let outputDir = null;
+    let noWakeLock = false;
+    let noNotify = false;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (a === '--help' || a === '-h') {
@@ -288,6 +295,14 @@ function parseCLI() {
             retryFailed = true;
         } else if (a === '--verify-integrity') {
             verifyIntegrity = true;
+        } else if (a === '--output') {
+            const v = args[i + 1]; if (v) { outputDir = v; i++; }
+        } else if (a.startsWith('--output=')) {
+            outputDir = a.split('=')[1];
+        } else if (a === '--no-wake-lock') {
+            noWakeLock = true;
+        } else if (a === '--no-notify') {
+            noNotify = true;
         } else if (!inputCourseUrl) {
             inputCourseUrl = a;
         }
@@ -297,7 +312,8 @@ function parseCLI() {
     }
     return {
         inputCourseUrl, sampleBytesToDownload, isVerboseLoggingEnabled, userEmail, userPassword, sessionFile, forceLogin,
-        quality, parallel, chaptersSpec, noSubtitle, noAttachments, noLog, estimateSize, dryRun, retryFailed, verifyIntegrity
+        quality, parallel, chaptersSpec, noSubtitle, noAttachments, noLog, estimateSize, dryRun, retryFailed, verifyIntegrity,
+        outputDir, noWakeLock, noNotify
     };
 }
 
@@ -1243,14 +1259,29 @@ const REPORT_COLUMNS = [
     { label: 'Mode', get: r => r.mode || '' },
     { label: 'Reason', get: r => r.reason || '' },
     { label: 'FilePath', get: r => r.filePath || '' },
+    { label: 'DownloadURL', get: r => r.videoUrl || '' },
 ];
 
-function writeReportFiles(outputRootFolder, records) {
-    const csv = buildCsv(records, REPORT_COLUMNS);
-    const csvPath = path.join(outputRootFolder, 'report.csv');
-    fs.writeFileSync(csvPath, '\uFEFF' + csv, 'utf8'); // BOM helps Excel render Persian/UTF-8 correctly
+// Approximate validity window observed on maktabkhooneh's tokenized CDN links (video/attachment URLs).
+// This is empirical, not guaranteed by the server, so the wording stays conservative ("معمولاً").
+const LINK_VALIDITY_NOTE_FA = 'این لینک‌ها توکن‌دار و کوتاه‌مدت هستند و معمولاً حدود ۱۵ تا ۳۰ دقیقه پس از تولید این گزارش منقضی می‌شوند؛ اگر مدتی بعد از این گزارش استفاده کنید، احتمالاً با خطای دسترسی مواجه خواهید شد.';
 
-    const rowsHtml = records.map(r => `<tr class="status-${escapeHtml(r.status)}"><td>${escapeHtml(r.chapterTitle)}</td><td>${escapeHtml(r.unitTitle)}</td><td>${escapeHtml(String(r.unitId))}</td><td>${escapeHtml(r.fileName)}</td><td>${escapeHtml(r.status)}</td><td>${escapeHtml(r.mode || '-')}</td><td>${escapeHtml(r.reason || '')}</td></tr>`).join('\n');
+function writeReportFiles(outputRootFolder, records) {
+    const generatedAt = new Date();
+    const generatedAtIso = generatedAt.toISOString();
+    const generatedAtFa = generatedAt.toLocaleString('fa-IR');
+
+    const csv = buildCsv(records, REPORT_COLUMNS);
+    const csvComment = `# Generated: ${generatedAtIso} — DownloadURL column: ${LINK_VALIDITY_NOTE_FA}`;
+    const csvPath = path.join(outputRootFolder, 'report.csv');
+    fs.writeFileSync(csvPath, '\uFEFF' + csvComment + '\r\n' + csv, 'utf8'); // BOM helps Excel render Persian/UTF-8 correctly
+
+    const rowsHtml = records.map(r => {
+        const linkCell = r.videoUrl
+            ? `<a href="${escapeHtml(r.videoUrl)}" target="_blank" rel="noopener">لینک دانلود</a>`
+            : '-';
+        return `<tr class="status-${escapeHtml(r.status)}"><td>${escapeHtml(r.chapterTitle)}</td><td>${escapeHtml(r.unitTitle)}</td><td>${escapeHtml(String(r.unitId))}</td><td>${escapeHtml(r.fileName)}</td><td>${escapeHtml(r.status)}</td><td>${escapeHtml(r.mode || '-')}</td><td>${escapeHtml(r.reason || '')}</td><td>${linkCell}</td></tr>`;
+    }).join('\n');
     const summary = records.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {});
     const summaryHtml = Object.entries(summary).map(([k, v]) => `<span class="badge">${escapeHtml(k)}: ${v}</span>`).join(' ');
     const html = `<!DOCTYPE html>
@@ -1258,6 +1289,8 @@ function writeReportFiles(outputRootFolder, records) {
 <style>
 body{font-family:Tahoma,Arial,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px}
 h1{font-size:20px}
+.meta{color:#94a3b8;font-size:13px;margin-bottom:8px}
+.warn{background:#3f2d0f;border:1px solid #92640f;color:#fde68a;padding:10px 14px;border-radius:8px;font-size:13px;margin:12px 0}
 table{border-collapse:collapse;width:100%;margin-top:16px;font-size:13px}
 th,td{border:1px solid #334155;padding:6px 10px;text-align:right}
 th{background:#1e293b}
@@ -1267,11 +1300,14 @@ tr.status-locked{background:#3f2d0f}
 tr.status-skipped-exists{background:#1e293b}
 tr.status-no-video{background:#3f0f0f}
 .badge{display:inline-block;padding:4px 10px;border-radius:12px;background:#1e293b;margin-inline-end:8px}
+a{color:#38bdf8}
 </style></head>
 <body>
 <h1>📋 گزارش دانلود دوره</h1>
+<div class="meta">🕒 زمان تولید گزارش: ${escapeHtml(generatedAtFa)} (${escapeHtml(generatedAtIso)})</div>
+<div class="warn">⚠️ ستون «لینک دانلود» توکن‌دار است. ${escapeHtml(LINK_VALIDITY_NOTE_FA)}</div>
 <div>${summaryHtml}</div>
-<table><thead><tr><th>فصل</th><th>عنوان</th><th>Unit ID</th><th>فایل</th><th>وضعیت</th><th>حالت</th><th>توضیح</th></tr></thead>
+<table><thead><tr><th>فصل</th><th>عنوان</th><th>Unit ID</th><th>فایل</th><th>وضعیت</th><th>حالت</th><th>توضیح</th><th>لینک دانلود</th></tr></thead>
 <tbody>${rowsHtml}</tbody></table>
 </body></html>`;
     fs.writeFileSync(path.join(outputRootFolder, 'report.html'), html, 'utf8');
@@ -1306,7 +1342,9 @@ function loadFailedUnitIdsFromReport(outputRootFolder) {
     let content;
     try { content = fs.readFileSync(csvPath, 'utf8'); } catch { return null; }
     if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
-    const lines = content.split(/\r\n|\n/).filter(Boolean);
+    let lines = content.split(/\r\n|\n/).filter(Boolean);
+    // Skip the leading "# Generated: ..." comment line written by writeReportFiles, if present.
+    if (lines.length && lines[0].startsWith('#')) lines = lines.slice(1);
     if (lines.length < 2) return null;
     const header = parseCsvLine(lines[0]);
     const unitIdIdx = header.indexOf('UnitId');
@@ -1364,12 +1402,15 @@ async function runDryRun(tasks, referer, quality, outputRootFolder) {
         console.log(`${icon} ${task.finalFileName}${note ? ' — ' + note : ''}`);
         records.push({
             chapterTitle: task.chapter.title || task.chapter.slug, unitTitle: task.unit.title || task.unit.slug,
-            unitId: task.unit.id, fileName: task.finalFileName, status, mode: resolved.mode || '', reason: note, filePath: ''
+            unitId: task.unit.id, fileName: task.finalFileName, status, mode: resolved.mode || '', reason: note, filePath: '',
+            videoUrl: resolved.ok ? resolved.url : ''
         });
     }
+    const generatedAtIso = new Date().toISOString();
     const csv = buildCsv(records, REPORT_COLUMNS);
+    const csvComment = `# Generated: ${generatedAtIso} — DownloadURL column: ${LINK_VALIDITY_NOTE_FA}`;
     const csvPath = path.join(outputRootFolder, 'dry-run-list.csv');
-    fs.writeFileSync(csvPath, '\uFEFF' + csv, 'utf8');
+    fs.writeFileSync(csvPath, '\uFEFF' + csvComment + '\r\n' + csv, 'utf8');
     console.log('—'.repeat(40));
     console.log(`🧪 Dry run complete. Available: ${paintGreen(String(availableCount))}  Locked: ${paintYellow(String(lockedCount))}  Errors: ${paintRed(String(errorCount))}`);
     console.log(`📄 List written: ${paintCyan(csvPath)}`);
@@ -1419,10 +1460,40 @@ async function verifyDownloadedIntegrity(records, referer) {
     }
 }
 
+// ===============
+// Termux (Android) integrations — safe no-ops on any other platform / without termux-api installed
+// ===============
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
+
+async function commandExists(cmd) {
+    try { await execFileAsync('which', [cmd]); return true; } catch { return false; }
+}
+
+let wakeLockAcquired = false;
+async function tryAcquireWakeLock() {
+    if (!(await commandExists('termux-wake-lock'))) return false;
+    try { await execFileAsync('termux-wake-lock'); wakeLockAcquired = true; logInfo('🔓 Termux wake-lock acquired (screen won\'t sleep during download).'); return true; }
+    catch (e) { logWarn('Could not acquire termux-wake-lock: ' + e.message); return false; }
+}
+async function releaseWakeLockIfHeld() {
+    if (!wakeLockAcquired) return;
+    try { await execFileAsync('termux-wake-unlock'); logInfo('🔒 Termux wake-lock released.'); }
+    catch { /* non-fatal */ }
+    wakeLockAcquired = false;
+}
+async function tryNotify(title, content) {
+    if (!(await commandExists('termux-notification'))) return false;
+    try { await execFileAsync('termux-notification', ['--title', title, '--content', content]); return true; }
+    catch { return false; }
+}
+
 async function main() {
     const {
         inputCourseUrl, sampleBytesToDownload, isVerboseLoggingEnabled, userEmail, userPassword, sessionFile, forceLogin,
-        quality, parallel, chaptersSpec, noSubtitle, noAttachments, noLog, estimateSize, dryRun, retryFailed, verifyIntegrity
+        quality, parallel, chaptersSpec, noSubtitle, noAttachments, noLog, estimateSize, dryRun, retryFailed, verifyIntegrity,
+        outputDir, noWakeLock, noNotify
     } = parseCLI();
     const { verbose } = createVerboseLogger(isVerboseLoggingEnabled);
     if (!inputCourseUrl) { printUsage(); process.exit(1); }
@@ -1434,7 +1505,10 @@ async function main() {
     const courseSlug = extractCourseSlug(normalizedCourseUrl);
     // Use decoded slug (human-friendly, especially for Persian) for the top-level folder name
     const courseDisplayName = sanitizeName(decodeURIComponent(courseSlug));
-    const outputRootFolder = path.resolve(process.cwd(), 'download', courseDisplayName);
+    // --output lets the download root be redirected anywhere (e.g. ~/storage/downloads on Termux);
+    // default stays exactly as before: ./download/<courseName>
+    const outputBase = outputDir ? path.resolve(process.cwd(), outputDir) : path.resolve(process.cwd(), 'download');
+    const outputRootFolder = path.join(outputBase, courseDisplayName);
     // Ensure base output folder exists
     try { await fs.promises.mkdir(outputRootFolder, { recursive: true }); } catch { }
 
@@ -1443,6 +1517,9 @@ async function main() {
         const logPath = path.join(outputRootFolder, 'download.log');
         if (setupLogFile(logPath)) console.log(`🧾 Logging to: ${paintCyan(logPath)}`);
     }
+
+    // Termux: keep the screen/CPU awake for the duration of the download (safe no-op elsewhere / if not installed)
+    if (!noWakeLock) await tryAcquireWakeLock();
 
     // Verify auth profile (reuse from prepareSession if available)
     let coreData = prep.core;
@@ -1691,7 +1768,17 @@ async function main() {
             try { await verifyDownloadedIntegrity(reportRecords, normalizedCourseUrl); }
             catch (e) { logWarn('Integrity verification failed: ' + e.message); }
         }
+
+        if (!noNotify) {
+            const summary = `✅ ${downloadedCount} downloaded, 🟡 ${skippedCount} skipped, ❌ ${failedCount} failed`;
+            await tryNotify(`Maktabkhooneh: ${courseDisplayName}`, summary);
+        }
+        if (!noWakeLock) await releaseWakeLockIfHeld();
     }
 }
 
-main().catch(err => { logError('Fatal:', err); process.exit(1); });
+main().catch(async err => {
+    logError('Fatal:', err);
+    try { await releaseWakeLockIfHeld(); } catch { }
+    process.exit(1);
+});

@@ -176,6 +176,9 @@ node download.mjs "https://maktabkhooneh.org/course/<slug>/"
 | `--dry-run` | فقط لیست‌کردن آنچه قرار است دانلود شود (بدون دانلود واقعی) + تولید فایل `dry-run-list.csv` | `--dry-run` |
 | `--retry-failed` | فقط تلاش مجدد برای واحدهایی که در آخرین `report.csv` همین دوره با وضعیت `failed` ثبت شده‌اند | `--retry-failed` |
 | `--verify-integrity` | پس از پایان دانلود، سایز فایل‌های نهایی را با سرور مقایسه می‌کند و برای هر فایل مشکوک/ناقص می‌پرسد دوباره دانلود شود یا نه | `--verify-integrity` |
+| `--output <path>` | مسیر خروجی دلخواه به‌جای پیش‌فرض `./download/<نام دوره>` (مخصوصاً برای Termux/موبایل) | `--output ~/storage/downloads/Maktabkhooneh` |
+| `--no-wake-lock` | (فقط Termux/اندروید) غیرفعال‌کردن wake-lock خودکار حین دانلود | `--no-wake-lock` |
+| `--no-notify` | (فقط Termux/اندروید) غیرفعال‌کردن نوتیفیکیشن پایان کار | `--no-notify` |
 | `--verbose` یا `-v` | لاگ‌های تفصیلی/دیباگ | `--verbose` |
 | `--help` یا `-h` | نمایش راهنما | `--help` |
 
@@ -215,24 +218,31 @@ download/<نام دوره>
 ## 📱 اجرا روی موبایل
 
 ### اندروید — با Termux (پیشنهادی)
-[Termux](https://f-droid.org/packages/com.termux/) یک ترمینال لینوکسی واقعی برای اندروید است (از F-Droid نصب کنید، نه از Google Play که نسخه‌ی قدیمی و بی‌نگهداری دارد). چون Termux یک Node.js واقعی فراهم می‌کند، همین اسکریپت تقریباً بدون تغییر روی آن اجرا می‌شود:
+[Termux](https://f-droid.org/packages/com.termux/) یک ترمینال لینوکسی واقعی برای اندروید است (از F-Droid نصب کنید، نه از Google Play که نسخه‌ی قدیمی و بی‌نگهداری دارد). چون Termux یک Node.js واقعی فراهم می‌کند، همین اسکریپت تقریباً بدون تغییر روی آن اجرا می‌شود. علاوه بر این، این نسخه چند بهبود مخصوص Termux هم دارد که خودکار فعال می‌شوند (و روی ویندوز/لینوکس/مک هیچ تأثیری ندارند):
+
+- **`--output <path>`**: مسیر خروجی دلخواه، مثلاً مستقیم توی پوشه‌ی Download گوشی
+- **Wake-lock خودکار**: اگر پکیج `termux-api` نصب باشد، قبل از شروع دانلود صفحه/CPU گوشی رو بیدار نگه می‌داره (`termux-wake-lock`) تا وسط دانلود قفل نشه، و در پایان خودش آزادش می‌کنه — قابل غیرفعال‌سازی با `--no-wake-lock`
+- **نوتیفیکیشن پایان کار**: در پایان دانلود کل دوره، اگه `termux-api` نصب باشه، یک اعلان با خلاصه‌ی نتیجه (تعداد دانلودشده/رد شده/ناموفق) می‌فرسته — قابل غیرفعال‌سازی با `--no-notify`
+
+اگر `termux-api` نصب نباشد، این دو ویژگی به‌طور خودکار و بی‌صدا (بدون خطا) غیرفعال می‌مانند؛ یعنی نصبشان اختیاری است.
 
 ```bash
-# نصب Node.js داخل Termux
+# نصب Node.js و ابزار Termux API داخل Termux
 pkg update && pkg upgrade
-pkg install nodejs git
+pkg install nodejs git termux-api
 
-# دسترسی به پوشه‌ی دانلودهای گوشی (اختیاری، برای اینکه فایل‌ها در اپ‌های دیگر هم دیده شوند)
+# دسترسی به پوشه‌ی دانلودهای گوشی (لازم برای --output به پوشه‌ی Download)
 termux-setup-storage
 
 # دریافت پروژه
 git clone https://github.com/HaamiData/maktabkhooneh-downloader.git
 cd maktabkhooneh-downloader
 
-# اجرا (دقیقاً مثل کامپیوتر)
-node download.mjs "https://maktabkhooneh.org/course/<slug>/" --user you@example.com --pass "Secret123"
+# اجرا با ذخیره‌ی مستقیم در پوشه‌ی Download گوشی
+node download.mjs "https://maktabkhooneh.org/course/<slug>/" --user you@example.com --pass "Secret123" --output ~/storage/downloads/Maktabkhooneh
 ```
-فایل‌های دانلودشده در همان مسیر پروژه، زیر پوشه‌ی `download/` قرار می‌گیرند. اگر می‌خواهید مستقیماً در پوشه‌ی Download گوشی ذخیره شوند، بعد از `termux-setup-storage` می‌توانید پروژه را داخل `~/storage/downloads/` اجرا کنید یا در پایان فایل‌ها را به آنجا کپی کنید.
+
+نکته: نصب `termux-api` به‌تنهایی کافی نیست — اپ همراهش یعنی **Termux:API** را هم از F-Droid نصب کنید (بدون آن، دستورهای `termux-wake-lock`/`termux-notification` کار نمی‌کنند؛ در این حالت اسکریپت فقط یک هشدار می‌دهد و بدون این دو قابلیت ادامه می‌دهد).
 
 ### iOS — فعلاً پشتیبانی نمی‌شود
 اپل اجازه‌ی اجرای Node.js مستقل (مثل Termux در اندروید) را در iOS نمی‌دهد، بنابراین این اسکریپت به همین شکل روی آیفون/آیپد قابل اجرا نیست.
